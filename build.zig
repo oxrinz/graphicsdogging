@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
     exe.linkLibC();
     exe.linkSystemLibrary("drm");
     exe.linkSystemLibrary("gbm");
+    exe.linkSystemLibrary("vulkan");
 
     exe.addIncludePath(.{ .cwd_relative = "/usr/include/libdrm" });
 
