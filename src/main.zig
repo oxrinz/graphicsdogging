@@ -235,6 +235,8 @@ fn createKmsFbFromBo(fd: c_int, w: u32, h: u32, bo: *c.gbm_bo, use_modifiers: bo
 
     var fb_id: u32 = 0;
 
+    std.debug.print("{any}\n", .{use_modifiers});
+
     if (use_modifiers) {
         var mods = [_]u64{ modifier, 0, 0, 0 };
         const rc_mod = c.drmModeAddFB2WithModifiers(
@@ -546,7 +548,8 @@ pub fn main() !void {
     if (gbm_dev == null) return error.GbmCreateDeviceFailed;
     defer c.gbm_device_destroy(gbm_dev);
 
-    const use_mods = drmHasAddFb2Modifiers(drm_fd);
+    var use_mods = drmHasAddFb2Modifiers(drm_fd);
+    use_mods = false;
 
     var buffers: [2]Buffer = undefined;
     var bi: usize = 0;
@@ -728,25 +731,25 @@ pub fn main() !void {
             .handleTypes = c.VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
         };
 
-        var plane = c.VkSubresourceLayout{
-            .offset = 0,
-            .size = b.bo_size,
-            .rowPitch = @as(u64, b.stride),
-            .arrayPitch = 0,
-            .depthPitch = 0,
-        };
+        //        var plane = c.VkSubresourceLayout{
+        //            .offset = 0,
+        //            .size = b.bo_size,
+        //            .rowPitch = @as(u64, b.stride),
+        //            .arrayPitch = 0,
+        //            .depthPitch = 0,
+        //        };
 
-        var drm_mod = c.VkImageDrmFormatModifierExplicitCreateInfoEXT{
-            .sType = c.VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT,
-            .pNext = &ext_img,
-            .drmFormatModifier = b.modifier,
-            .drmFormatModifierPlaneCount = 1,
-            .pPlaneLayouts = &plane,
-        };
+        //        var drm_mod = c.VkImageDrmFormatModifierExplicitCreateInfoEXT{
+        //            .sType = c.VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT,
+        //            .pNext = &ext_img,
+        //            .drmFormatModifier = b.modifier,
+        //            .drmFormatModifierPlaneCount = 1,
+        //            .pPlaneLayouts = &plane,
+        //        };
 
         var img_info = c.VkImageCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext = &drm_mod,
+            .pNext = &ext_img,
             .flags = 0,
             .imageType = c.VK_IMAGE_TYPE_2D,
             .format = c.VK_FORMAT_B8G8R8A8_UNORM,
@@ -754,13 +757,31 @@ pub fn main() !void {
             .mipLevels = 1,
             .arrayLayers = 1,
             .samples = c.VK_SAMPLE_COUNT_1_BIT,
-            .tiling = c.VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+            .tiling = c.VK_IMAGE_TILING_LINEAR,
             .usage = c.VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = null,
             .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
         };
+
+        //        var img_info = c.VkImageCreateInfo{
+        //            .sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        //            .pNext = &drm_mod,
+        //            .flags = 0,
+        //            .imageType = c.VK_IMAGE_TYPE_2D,
+        //            .format = c.VK_FORMAT_B8G8R8A8_UNORM,
+        //            .extent = .{ .width = w, .height = h, .depth = 1 },
+        //            .mipLevels = 1,
+        //            .arrayLayers = 1,
+        //            .samples = c.VK_SAMPLE_COUNT_1_BIT,
+        //            .tiling = c.VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+        //            .usage = c.VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        //            .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
+        //            .queueFamilyIndexCount = 0,
+        //            .pQueueFamilyIndices = null,
+        //            .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+        //        };
 
         var image: c.VkImage = undefined;
         try vkCheck(c.vkCreateImage(device, &img_info, null, &image), "vkCreateImage");
@@ -787,7 +808,7 @@ pub fn main() !void {
             .buffer = vkNullHandle(c.VkBuffer),
         };
 
-        const mem_type = try findMemoryType(phys, req.memoryTypeBits, 0);
+        const mem_type = try findMemoryType(phys, req.memoryTypeBits, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         var alloc = c.VkMemoryAllocateInfo{
             .sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -863,6 +884,8 @@ pub fn main() !void {
         // Wait until KMS is done reading this BO before rendering into it again.
         try waitFenceFd(b.kms_done_fd);
         b.kms_done_fd = -1;
+
+        std.debug.print("fence existed\n", .{});
 
         try vkCheck(c.vkResetFences(device, 1, &b.render_fence), "vkResetFences");
         try vkCheck(c.vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer");
@@ -991,6 +1014,8 @@ pub fn main() !void {
             return e;
         };
 
+        std.debug.print("atomic flipped\n", .{});
+
         // Kernel imported the sync_file during the ioctl; close our fd now.
         if (in_fence_fd >= 0) _ = c.close(in_fence_fd);
         in_fence_fd = -1;
@@ -1000,11 +1025,15 @@ pub fn main() !void {
         // Wait for flip event (with timeout, so we never hang forever)
         try waitForFlip(drm_fd, &evctx, &flip_state);
 
+        std.debug.print("waited for flip\n", .{});
+
         // Make sure GPU work is done too (helps catch fence/export weirdness)
         try vkCheck(
-            c.vkWaitForFences(device, 1, &b.render_fence, c.VK_TRUE, std.math.maxInt(u64)),
+            c.vkWaitForFences(device, 1, &b.render_fence, c.VK_TRUE, 2_000_000_000),
             "vkWaitForFences",
         );
+
+        std.debug.print("waited for fences\n", .{});
     }
 
     std.Thread.sleep(1 * std.time.ns_per_s);
